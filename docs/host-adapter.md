@@ -286,6 +286,16 @@ against the branch as it stands. The [#336] reasoning drop counts as view shapin
 than a side effect, so it is applied to the view too; the degeneration collapse (#351) is
 internal recovery machinery like image stripping, so it is not.
 
+**Fidelity bound.** The view re-runs the pipeline, not the live turn's metering: its token
+count is the raw estimate (no image tokens, system-prompt measurement, host floor, k̂
+calibration or sent-view recount) and its config carries no output-headroom or overflow
+re-centering. While usage sits far below every band the two agree exactly — a test pins the
+view to a fresh transform of the same branch. Near the pressure/truncate bands they can
+legitimately differ: the kernel's emergency truncation and nudge decisions key off token
+counts the view does not compute, and the live transform additionally appends the injected
+nudge message and applies the degeneration collapse. Treat the answer as "this adapter's
+projection of the caller's branch", not a byte copy of the executor's last wire request.
+
 **Read-only and isolated.** The compression state is deep-copied before the kernel runs,
 and the result is never saved, counted against the session's sent-view accounting, allowed
 to inject a nudge, or allowed to fire an update check. `stateFor`'s own normalizations
