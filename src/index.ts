@@ -1131,14 +1131,20 @@ function wireThrottleRetry(pi: ExtensionAPI, runtime: AcpRuntime): void {
 }
 
 /** The advisor-facing projection: the same pipeline the context transform runs
- *  (stateFor → processTurn → coreOutToAgentMessages), against an isolated copy
- *  of the compression state, with every side effect the transform performs left
- *  out — no save, no sent-view accounting, no k̂ pairing, no nudge, no update
- *  check. Rebuilt per request so a consumer running mid-turn sees the branch as
- *  it stands now, including the assistant message carrying its own call. */
+ *  (stateFor → processTurn → coreOutToAgentMessages → dropCompressReasoning),
+ *  against an isolated copy of the compression state, with every side effect
+ *  the transform performs left out — no save, no sent-view accounting, no k̂
+ *  pairing, no nudge, no update check. The [#336] reasoning drop IS included:
+ *  it is view shaping, not a side effect — without it, closed-round compress
+ *  thinking rides every answer as an unreclaimable floor, exactly the waste
+ *  this channel exists to save consumers from. Degeneration collapse (#351)
+ *  stays out of scope like image stripping: internal recovery machinery, not
+ *  part of what the executor's model saw. Rebuilt per request so a consumer
+ *  running mid-turn sees the branch as it stands now, including the assistant
+ *  message carrying its own call. */
 async function buildContextView(runtime: AcpRuntime, ctx: ExtensionContext): Promise<AgentMessage[]> {
-  // Serialise against the tools that mutate compression state (compress,
-  // decompress) so the snapshot cannot interleave with a fold, and ask for the
+  // Serialise against the context transform (the only other lock taker) so the
+  // snapshot cannot interleave with a live turn's pass, and ask for the
   // read-only path so projecting for a consumer neither saves nor caches —
   // `stateFor` hands back state already deep-copied for `processTurn`.
   const release = await runtime.acquireLock(ctx.sessionManager.getSessionId());
@@ -1147,7 +1153,8 @@ async function buildContextView(runtime: AcpRuntime, ctx: ExtensionContext): Pro
     const config = runtime.configFor(ctx);
     const tokenCount = estimateTokens(coreMessages, collectCoveredMessageIds(state), new Map());
     const turn = runtime.core.processTurn({ messages: coreMessages, state, config, tokenCount });
-    return coreOutToAgentMessages(turn.messages, collectOriginals(entries));
+    const rebuilt = coreOutToAgentMessages(turn.messages, collectOriginals(entries));
+    return dropCompressReasoning(rebuilt, runtime.reasoningDropFor(ctx));
   } finally {
     release();
   }

@@ -151,6 +151,11 @@ test("context view is the projection the executor's model saw, rebuilt per reque
   // Pi persists the call and its result; that is how the summary reaches the
   // model, so the fixture has to carry it or it is not modelling a real session.
   entries.push(assistantMsg("e31", [
+    { type: "text", text: "folding the early turns now" },
+    // >2048 chars to clear the reasoning-drop threshold, but not a single-codepoint
+    // run — that would trip the #351 degeneration collapse, which the view does not
+    // apply (internal recovery machinery), and muddy what this assertion pins down.
+    { type: "thinking", thinking: "COMPRESS-THINKING-" + "ab".repeat(1500) },
     { type: "toolCall", id: "tc1", name: "compress", arguments: { content: [{ startId: "m00001", endId: "m00005", summary: SUMMARY }] } },
   ]));
   entries.push(toolResultMsg("e32", "tc1", "compress", "▣ ACP | folded 5 messages"));
@@ -168,6 +173,10 @@ test("context view is the projection the executor's model saw, rebuilt per reque
   assert.deepEqual(firstMessages, transformed.messages, "the view IS the projection the transform produced");
   assert.ok(JSON.stringify(firstMessages).includes(SUMMARY), "the summary survives into the view");
   assert.ok(pairingValid(firstMessages), "the view leaves no orphan tool call or result");
+  assert.ok(
+    JSON.stringify(firstMessages).includes("COMPRESS-THINKING"),
+    "an in-flight compress round keeps its thinking ([#348]: its result is still the last message)",
+  );
 
   // Mid-turn: the assistant message carrying the consumer's own advisor() call
   // lands, a sibling read() finishes, and the advisor call is still in flight.
@@ -187,6 +196,11 @@ test("context view is the projection the executor's model saw, rebuilt per reque
   assert.match(sText, /LATEST-TOOL-EVIDENCE/, "evidence produced after the first view is visible");
   assert.ok(sText.includes(SUMMARY), "the summary still survives in the later view");
   assert.doesNotMatch(sText, /turn2 /, "the compressed range stays folded in the later view");
+  assert.doesNotMatch(
+    sText,
+    /COMPRESS-THINKING/,
+    "the closed-round compress thinking is dropped from the view too ([#336]: view shaping, not a side effect)",
+  );
   assert.ok(pairingValid(secondMessages), "the later view leaves no orphan tool call or result");
   assert.deepEqual(
     secondMessages,
