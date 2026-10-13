@@ -33,6 +33,7 @@ import { delegateStatusWidget } from "./fleet-widget.js";
 import { openFleetInspector } from "./fleet-inspector.js";
 import { applyStripImages } from "./strip-images.js";
 import { wireToolGuardrails } from "./tool-guardrails.js";
+import { wireContextView } from "./context-view.js";
 import { debug, logError, logInfo, logWarn, logThrow, closeLogStream } from "./log.js";
 import { collectCoveredMessageIds, estimateTokens, collectImageTokens, modelSupportsImages, sentViewTokenCount, sentViewMeterMatches } from "./tokens.js";
 import { lastTurnBoundaryId, lastTurnBoundaryIndex } from "./turn-boundary.js";
@@ -125,6 +126,7 @@ export function createAcpExtension(adapter: AdapterConfig = {}): ExtensionFactor
     wireToolGuardrails(pi, runtime);
     wireOverflowSelfHeal(pi, runtime);
     wireThrottleRetry(pi, runtime);
+    wireContextView(pi, runtime, standDownIfProxied, (ctx) => buildContextView(runtime, ctx));
     const toolSurface = readToolSurfaceWithPacks(process.cwd());
     pi.registerTool(makeCompressTool(runtime, toolSurface.compress));
     pi.registerTool(makeDecompressTool(runtime, toolSurface.decompress));
@@ -1126,6 +1128,29 @@ function wireThrottleRetry(pi: ExtensionAPI, runtime: AcpRuntime): void {
   pi.on("session_shutdown", (_event, ctx) => {
     runtime.throttleDrop(ctx.sessionManager.getSessionId());
   });
+}
+
+/** The advisor-facing projection: the same pipeline the context transform runs
+ *  (stateFor → processTurn → coreOutToAgentMessages), against an isolated copy
+ *  of the compression state, with every side effect the transform performs left
+ *  out — no save, no sent-view accounting, no k̂ pairing, no nudge, no update
+ *  check. Rebuilt per request so a consumer running mid-turn sees the branch as
+ *  it stands now, including the assistant message carrying its own call. */
+async function buildContextView(runtime: AcpRuntime, ctx: ExtensionContext): Promise<AgentMessage[]> {
+  // Serialise against the tools that mutate compression state (compress,
+  // decompress) so the snapshot cannot interleave with a fold, and ask for the
+  // read-only path so projecting for a consumer neither saves nor caches —
+  // `stateFor` hands back state already deep-copied for `processTurn`.
+  const release = await runtime.acquireLock(ctx.sessionManager.getSessionId());
+  try {
+    const { state, coreMessages, entries } = await runtime.stateFor(ctx, undefined, true);
+    const config = runtime.configFor(ctx);
+    const tokenCount = estimateTokens(coreMessages, collectCoveredMessageIds(state), new Map());
+    const turn = runtime.core.processTurn({ messages: coreMessages, state, config, tokenCount });
+    return coreOutToAgentMessages(turn.messages, collectOriginals(entries));
+  } finally {
+    release();
+  }
 }
 
 function collectOriginals(entries: Array<{ type: string; id: string; message?: AgentMessage; content?: unknown }>): Map<string, AgentMessage> {
