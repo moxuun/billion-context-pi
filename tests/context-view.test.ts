@@ -275,9 +275,16 @@ function stubApi() {
 }
 
 type StubCtx = ReturnType<typeof stubCtx>;
-const stubCtx = (sessionId: string, leafId: string | null = "leaf-1") => ({
-  sessionManager: { getSessionId: () => sessionId, getLeafId: () => leafId },
-}) as unknown as ExtensionContext;
+const stubCtx = (sessionId: string, leafId: string | null = "leaf-1") =>
+  ({
+    sessionManager: {
+      getSessionId: () => sessionId,
+      getLeafId: () => leafId,
+      // The path the provider checks the requesting leaf against. Tests that
+      // care about branch movement replace both this and `getLeafId`.
+      getBranch: () => (leafId === null ? [] : [{ id: leafId }]),
+    },
+  }) as unknown as ExtensionContext;
 
 function wireStub(opts: {
   buildView: (ctx: ExtensionContext) => Promise<never[] | Record<string, unknown>[]>;
@@ -331,13 +338,29 @@ test("context view provider answers inactive for stand-down, mismatch and refusa
   }
 });
 
-test("context view provider stands down when the branch moves while it is building", async () => {
-  let leafId: string | null = "leaf-1";
-  const ctx = stubCtx("s1");
-  (ctx.sessionManager as { getLeafId: () => string | null }).getLeafId = () => leafId;
+/** A session manager whose branch is a mutable path, so a test can rewind it
+ *  or append to it from inside `buildView`. */
+function branchCtx(sessionId: string, path: string[]) {
+  let branch = path.map((id) => ({ id }));
+  const ctx = stubCtx(sessionId, branch.at(-1)?.id ?? null);
+  const sessionManager = ctx.sessionManager as unknown as {
+    getLeafId: () => string | null;
+    getBranch: () => { id: string }[];
+  };
+  sessionManager.getLeafId = () => branch.at(-1)?.id ?? null;
+  sessionManager.getBranch = () => branch;
+  return {
+    ctx,
+    rewind: (to: string[]) => { branch = to.map((id) => ({ id })); },
+    append: (id: string) => { branch = [...branch, { id }]; },
+  };
+}
+
+test("context view provider stands down when the branch is rewound while it is building", async () => {
+  const { ctx, rewind } = branchCtx("s1", ["root", "leaf-1"]);
   const api = wireStub({
     buildView: async () => {
-      leafId = "leaf-2";
+      rewind(["root"]); // a rewind past leaf-1: the caller is no longer on it
       return [{ role: "user", content: "x" }];
     },
   });
@@ -345,6 +368,22 @@ test("context view provider stands down when the branch moves while it is buildi
   const result = await request(api, ctx);
   assert.equal(result?.status, "inactive");
   assert.equal((result as { reason: string }).reason, "branch-moved");
+});
+
+test("context view provider still answers when the branch only grows while it is building", async () => {
+  // A sibling tool result landing mid-build is ordinary turn progress, not a
+  // branch move; refusing here would starve the consumer of the view it asked
+  // for. The projection covers the branch as it stood when the caller asked.
+  const { ctx, append } = branchCtx("s1", ["root", "leaf-1"]);
+  const api = wireStub({
+    buildView: async () => {
+      append("leaf-2");
+      return [{ role: "user", content: "x" }];
+    },
+  });
+
+  const result = await request(api, ctx);
+  assert.equal(result?.status, "available");
 });
 
 test("context view provider ignores malformed payloads without claiming", () => {

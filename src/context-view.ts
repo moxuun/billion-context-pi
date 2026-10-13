@@ -98,11 +98,19 @@ async function viewFor(
   if (runtime.refused) return inactive("refused");
   if (standDownIfProxied(req.ctx)) return inactive("stood-down");
   if (req.ctx.sessionManager.getSessionId() !== req.sessionId) return inactive("session-mismatch");
-  // The builder awaits I/O; a rewind or fork landing in that window would leave
-  // the projection describing a branch the caller is no longer on.
-  const leafBefore = req.ctx.sessionManager.getLeafId?.();
+  // The builder awaits I/O, so the branch can move under it. Growth is not a
+  // problem: the caller asked for the branch as it stood when it asked, and its
+  // own entry is still on that path. A rewind or fork landing in the window is:
+  // the projection would describe a branch the caller is no longer on. Comparing
+  // leaf ids for equality would call the ordinary case — a sibling tool result
+  // landing mid-build — a branch move and refuse a view the caller needs.
+  const sessionManager = req.ctx.sessionManager;
+  const leafBefore = sessionManager.getLeafId?.();
   const messages = await buildView(req.ctx);
-  if (req.ctx.sessionManager.getLeafId?.() !== leafBefore) return inactive("branch-moved");
+  const branch = sessionManager.getBranch?.();
+  if (branch && leafBefore && !branch.some((entry) => entry.id === leafBefore)) {
+    return inactive("branch-moved");
+  }
   if (messages.length === 0) return inactive("empty");
   return {
     status: "available",

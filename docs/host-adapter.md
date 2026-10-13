@@ -291,10 +291,24 @@ to inject a nudge, or allowed to fire an update check. `stateFor`'s own normaliz
 do. The answer is `structuredClone`d on the way out, because `coreOutToAgentMessages`
 returns the session's own message objects for anything it did not have to patch.
 
-**Failures are not swallowed.** A builder that throws rejects the claim. A consumer has to
-be able to tell "no provider installed" from "the hand-off broke", or it silently reverts
-to the uncompressed history this module exists to avoid. `inactive` is reserved for answers
-that are legitimately not a view: `refused` (host unsupported), `stood-down` (proxy/native
-mode), `session-mismatch`, and `empty` (the projection came back with nothing). Consumers
-must treat every failure — no provider, `inactive`, a malformed answer, a rejected claim —
-as "use my own history", never as an error.
+**Failures are not swallowed.** A builder that throws rejects the claim, so a consumer can
+tell "no provider installed" from "the hand-off broke" — a distinction it needs, because
+falling back on a broken hand-off silently reverts to the uncompressed history this module
+exists to avoid.
+
+`inactive` is reserved for answers that are legitimately not a view, and only some of them
+mean "use your own history":
+
+| Reason | Meaning | Consumer should |
+|---|---|---|
+| `refused` | host unsupported (e.g. OMP) | fall back |
+| `stood-down` | proxy/native mode | fall back |
+| `empty` | the projection came back with nothing | fall back |
+| `session-mismatch` | the request named a different session | treat as broken |
+| `branch-moved` | a rewind or fork landed while the view was building | treat as broken |
+
+The last two are not absences: the adapter answered, and what it answered is not a view of
+the caller's branch. Surface them rather than reviewing the wrong context. The same goes for
+a malformed answer — never for a missing provider, which is a plain absence. Note that
+ordinary turn progress is not `branch-moved`: the branch growing while the view is built is
+fine, since the caller asked for the branch as it stood when it asked.
