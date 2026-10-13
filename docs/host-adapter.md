@@ -281,7 +281,10 @@ assistant message carrying its own call is already persisted, and a sibling tool
 have completed before it. A projection recorded during the previous LLM request predates
 all of that, so it would hand the consumer a stale view of exactly the evidence it is being
 asked to review. The provider therefore re-runs the adapter's own pipeline
-(`stateFor` → `processTurn` → `coreOutToAgentMessages`) against the branch as it stands.
+(`stateFor` → `processTurn` → `coreOutToAgentMessages` → `dropCompressReasoning`)
+against the branch as it stands. The [#336] reasoning drop counts as view shaping rather
+than a side effect, so it is applied to the view too; the degeneration collapse (#351) is
+internal recovery machinery like image stripping, so it is not.
 
 **Read-only and isolated.** The compression state is deep-copied before the kernel runs,
 and the result is never saved, counted against the session's sent-view accounting, allowed
